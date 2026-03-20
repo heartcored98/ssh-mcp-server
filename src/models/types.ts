@@ -9,9 +9,12 @@ export interface SSHConfig {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  hostFingerprint?: string; // Expected server host key fingerprint, e.g. SHA256:...
+  strictHostKeyChecking?: boolean; // Enable strict host key verification (default: true)
   commandWhitelist?: string[]; // Command whitelist (array of regex strings)
   commandBlacklist?: string[]; // Command blacklist (array of regex strings)
   socksProxy?: string; // SOCKS proxy URL, e.g. 'socks://user:pass@host:port'
+  collectSystemStatus?: boolean; // Collect remote system status automatically (default: false)
 }
 
 /**

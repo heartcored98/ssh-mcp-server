@@ -23,9 +23,12 @@ export class CommandLineParser {
         password: { type: "string", short: "w" },
         privateKey: { type: "string", short: "k" },
         passphrase: { type: "string", short: "P" },
+        "host-fingerprint": { type: "string", short: "f" },
+        "insecure-skip-host-key-checking": { type: "boolean" },
         whitelist: { type: "string", short: "W" },
         blacklist: { type: "string", short: "B" },
         socksProxy: { type: "string", short: "s" },
+        "collect-status": { type: "boolean" },
         "pre-connect": { type: "boolean" },
       },
       allowPositionals: true,
@@ -112,6 +115,9 @@ export class CommandLineParser {
       const password = values.password || positionals[3];
       const privateKey = values.privateKey;
       const passphrase = values.passphrase;
+      const hostFingerprint = values["host-fingerprint"];
+      const strictHostKeyChecking =
+        values["insecure-skip-host-key-checking"] === true ? false : undefined;
       const whitelist = values.whitelist;
       const blacklist = values.blacklist;
 
@@ -134,7 +140,10 @@ export class CommandLineParser {
         password,
         privateKey,
         passphrase,
+        hostFingerprint,
+        strictHostKeyChecking,
         socksProxy: values.socksProxy,
+        collectSystemStatus: values["collect-status"] === true ? true : undefined,
         commandWhitelist: whitelist
           ? whitelist
               .split(",")
@@ -191,7 +200,10 @@ export class CommandLineParser {
       password: conf.password,
       privateKey: conf.privateKey,
       passphrase: conf.passphrase,
+      hostFingerprint: conf.hostFingerprint,
+      strictHostKeyChecking: this.parseOptionalBoolean(conf.strictHostKeyChecking),
       socksProxy: conf.socksProxy,
+      collectSystemStatus: this.parseOptionalBoolean(conf.collectSystemStatus),
       commandWhitelist: conf.whitelist
         ? conf.whitelist
             .split("|")
@@ -205,6 +217,29 @@ export class CommandLineParser {
             .filter(Boolean)
         : undefined,
     };
+  }
+
+  /**
+   * Parse optional boolean value from config.
+   * @private
+   */
+  private static parseOptionalBoolean(value: unknown): boolean | undefined {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) {
+        return true;
+      }
+      if (["false", "0", "no", "off"].includes(normalized)) {
+        return false;
+      }
+    }
+    throw new Error(`Expected a boolean value, got: ${String(value)}`);
   }
 
   /**
@@ -228,7 +263,12 @@ export class CommandLineParser {
       password: config.password,
       privateKey: config.privateKey,
       passphrase: config.passphrase,
+      hostFingerprint: config.hostFingerprint,
+      strictHostKeyChecking:
+        this.parseOptionalBoolean(config.strictHostKeyChecking) ??
+        (config.insecureSkipHostKeyChecking === true ? false : undefined),
       socksProxy: config.socksProxy,
+      collectSystemStatus: this.parseOptionalBoolean(config.collectSystemStatus),
       commandWhitelist: Array.isArray(config.commandWhitelist)
         ? config.commandWhitelist
         : config.whitelist

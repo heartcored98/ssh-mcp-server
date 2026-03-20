@@ -62,9 +62,12 @@ Options:
   -w, --password      SSH password
   -k, --privateKey    SSH private key file path
   -P, --passphrase    Private key passphrase (if any)
+  -f, --host-fingerprint  SSH host key fingerprint (recommended format: SHA256:...)
+  --insecure-skip-host-key-checking  Disable host key verification (insecure, not recommended)
   -W, --whitelist     Command whitelist, comma-separated regular expressions
   -B, --blacklist     Command blacklist, comma-separated regular expressions
   -s, --socksProxy    SOCKS proxy server address (e.g., socks://user:password@host:port)
+  --collect-status    Collect remote system status automatically (default: disabled)
   --pre-connect       Pre-connect to all configured SSH servers on startup
 
 ```
@@ -82,7 +85,8 @@ Options:
         "--host", "192.168.1.1",
         "--port", "22",
         "--username", "root",
-        "--password", "pwd123456"
+        "--password", "pwd123456",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT"
       ]
     }
   }
@@ -102,7 +106,8 @@ Options:
         "--host", "192.168.1.1",
         "--port", "22",
         "--username", "root",
-        "--privateKey", "~/.ssh/id_rsa"
+        "--privateKey", "~/.ssh/id_rsa",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT"
       ]
     }
   }
@@ -123,7 +128,8 @@ Options:
         "--port", "22",
         "--username", "root",
         "--privateKey", "~/.ssh/id_rsa",
-        "--passphrase", "pwd123456"
+        "--passphrase", "pwd123456",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT"
       ]
     }
   }
@@ -144,6 +150,7 @@ Options:
         "--port", "22",
         "--username", "root",
         "--password", "pwd123456",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT",
         "--socksProxy", "socks://username:password@proxy-host:proxy-port"
       ]
     }
@@ -170,6 +177,7 @@ Example: Using Command Whitelist
         "--port", "22",
         "--username", "root",
         "--password", "pwd123456",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT",
         "--whitelist", "^ls( .*)?,^cat .*,^df.*"
       ]
     }
@@ -191,6 +199,7 @@ Example: Using Command Blacklist
         "--port", "22",
         "--username", "root",
         "--password", "pwd123456",
+        "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT",
         "--blacklist", "^rm .*,^shutdown.*,^reboot.*"
       ]
     }
@@ -217,6 +226,7 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "port": 22,
     "username": "alice",
     "password": "{abc=P100s0}",
+    "hostFingerprint": "SHA256:REPLACE_WITH_DEV_FINGERPRINT",
     "socksProxy": "socks://127.0.0.1:10808"
   },
   {
@@ -225,6 +235,7 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "port": 22,
     "username": "bob",
     "password": "yyy",
+    "hostFingerprint": "SHA256:REPLACE_WITH_PROD_FINGERPRINT",
     "socksProxy": "socks://127.0.0.1:10808"
   }
 ]
@@ -238,6 +249,7 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "port": 22,
     "username": "alice",
     "password": "{abc=P100s0}",
+    "hostFingerprint": "SHA256:REPLACE_WITH_DEV_FINGERPRINT",
     "socksProxy": "socks://127.0.0.1:10808"
   },
   "prod": {
@@ -245,6 +257,7 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "port": 22,
     "username": "bob",
     "password": "yyy",
+    "hostFingerprint": "SHA256:REPLACE_WITH_PROD_FINGERPRINT",
     "socksProxy": "socks://127.0.0.1:10808"
   }
 }
@@ -279,8 +292,8 @@ You can pass JSON-formatted configuration strings directly:
       "args": [
         "-y",
         "@fangjunjie/ssh-mcp-server",
-        "--ssh", "{\"name\":\"dev\",\"host\":\"1.2.3.4\",\"port\":22,\"username\":\"alice\",\"password\":\"{abc=P100s0}\",\"socksProxy\":\"socks://127.0.0.1:10808\"}",
-        "--ssh", "{\"name\":\"prod\",\"host\":\"5.6.7.8\",\"port\":22,\"username\":\"bob\",\"password\":\"yyy\",\"socksProxy\":\"socks://127.0.0.1:10808\"}"
+        "--ssh", "{\"name\":\"dev\",\"host\":\"1.2.3.4\",\"port\":22,\"username\":\"alice\",\"password\":\"{abc=P100s0}\",\"hostFingerprint\":\"SHA256:REPLACE_WITH_DEV_FINGERPRINT\",\"socksProxy\":\"socks://127.0.0.1:10808\"}",
+        "--ssh", "{\"name\":\"prod\",\"host\":\"5.6.7.8\",\"port\":22,\"username\":\"bob\",\"password\":\"yyy\",\"hostFingerprint\":\"SHA256:REPLACE_WITH_PROD_FINGERPRINT\",\"socksProxy\":\"socks://127.0.0.1:10808\"}"
       ]
     }
   }
@@ -293,8 +306,8 @@ For simple cases without special characters in passwords, you can still use the 
 
 ```bash
 npx @fangjunjie/ssh-mcp-server \
-  --ssh "name=dev,host=1.2.3.4,port=22,user=alice,password=xxx" \
-  --ssh "name=prod,host=5.6.7.8,port=22,user=bob,password=yyy"
+  --ssh "name=dev,host=1.2.3.4,port=22,user=alice,password=xxx,hostFingerprint=SHA256:REPLACE_WITH_DEV_FINGERPRINT" \
+  --ssh "name=prod,host=5.6.7.8,port=22,user=bob,password=yyy,hostFingerprint=SHA256:REPLACE_WITH_PROD_FINGERPRINT"
 ```
 
 > **⚠️ Note**: The legacy format may have issues with passwords containing special characters like `=`, `,`, `{`, `}`. Use Method 1 or Method 2 for passwords with special characters.
@@ -361,9 +374,11 @@ Example response:
 This server provides powerful capabilities to execute commands and transfer files on remote servers. To ensure it is used securely, please consider the following:
 
 - **Command Whitelisting**: It is *strongly recommended* to use the `--whitelist` option to restrict the set of commands that can be executed. Without a whitelist, any command can be executed on the remote server, which can be a significant security risk.
+- **Host Key Verification**: Set `--host-fingerprint SHA256:...` (or `hostFingerprint` in config) to pin the SSH server host key and prevent MITM attacks. Avoid `--insecure-skip-host-key-checking` unless you fully trust the network.
 - **Private Key Security**: The server reads the SSH private key into memory. Ensure that the machine running the `ssh-mcp-server` is secure. Do not expose the server to untrusted networks.
 - **Denial of Service (DoS)**: The server does not have built-in rate limiting. An attacker could potentially launch a DoS attack by flooding the server with connection requests or large file transfers. It is recommended to run the server behind a firewall or reverse proxy with rate-limiting capabilities.
-- **Path Traversal**: The server has built-in protection against path traversal attacks on the local filesystem. However, it is still important to be mindful of the paths used in `upload` and `download` commands.
+- **Path Traversal**: Upload/download local paths are restricted to the current working directory. Use a dedicated workspace and least-privilege filesystem permissions.
+- **Metadata Collection**: Remote system metadata collection is disabled by default. Enable it explicitly with `--collect-status` only when needed.
 
 ## 🌟 Star History
 

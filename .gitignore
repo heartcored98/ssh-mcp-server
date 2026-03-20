@@ -18,3 +18,7 @@ Thumbs.db
 .classpath
 .settings/
 memo.md
+
+# Local SSH MCP configs
+ssh-config.multi.json
+ssh-config.local.json

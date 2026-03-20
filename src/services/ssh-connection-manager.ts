@@ -10,6 +10,7 @@ import { collectSystemStatus } from "../utils/status-collector.js";
 import fs from "fs";
 import path from "path";
 import { SFTPWrapper } from "ssh2";
+import { createHash } from "crypto";
 
 /**
  * SSH Connection Manager class
@@ -90,25 +91,29 @@ export class SSHConnectionManager {
         // 先 resolve，让用户命令可以立即执行
         resolve();
 
-        // 延迟执行系统状态收集，避免与用户的第一个命令竞争 SSH 通道
-        setTimeout(() => {
-          collectSystemStatus(client, key)
-            .then((status) => {
-              this.statusCache.set(key, status);
-              Logger.log(`System status collected for [${key}]`, "info");
-            })
-            .catch((error) => {
-              Logger.log(
-                `Failed to collect system status for [${key}]: ${(error as Error).message}`,
-                "error",
-              );
-              // Set basic status even if collection fails
-              this.statusCache.set(key, {
-                reachable: true,
-                lastUpdated: new Date().toISOString(),
+        if (config.collectSystemStatus === true) {
+          // Delay status collection to avoid competing with first user command for SSH channels.
+          setTimeout(() => {
+            collectSystemStatus(client, key)
+              .then((status) => {
+                this.statusCache.set(key, status);
+                Logger.log(`System status collected for [${key}]`, "info");
+              })
+              .catch((error) => {
+                Logger.log(
+                  `Failed to collect system status for [${key}]: ${(error as Error).message}`,
+                  "error",
+                );
+                // Set basic status even if collection fails
+                this.statusCache.set(key, {
+                  reachable: true,
+                  lastUpdated: new Date().toISOString(),
+                });
               });
-            });
-        }, 1000); // 延迟 1 秒，确保用户命令有足够的时间窗口
+          }, 1000);
+        } else {
+          this.statusCache.delete(key);
+        }
       });
       client.on("error", (err: Error) => {
         this.connected.set(key, false);
@@ -123,6 +128,48 @@ export class SSHConnectionManager {
         port: config.port,
         username: config.username,
       };
+
+      const strictHostKeyChecking = config.strictHostKeyChecking !== false;
+      if (strictHostKeyChecking && !config.hostFingerprint) {
+        return reject(
+          new Error(
+            `Missing host fingerprint for [${key}]. Set hostFingerprint (SHA256:...) or explicitly set strictHostKeyChecking=false for insecure mode.`,
+          ),
+        );
+      }
+
+      sshConfig.hostVerifier = (hostKey: Buffer | string) => {
+        if (!strictHostKeyChecking) {
+          Logger.log(
+            `WARNING: strict host key checking is disabled for [${key}]`,
+            "error",
+          );
+          return true;
+        }
+
+        if (!config.hostFingerprint) {
+          return false;
+        }
+
+        const actualFingerprint = SSHConnectionManager.normalizeHostFingerprint(
+          Buffer.isBuffer(hostKey)
+            ? SSHConnectionManager.getHostFingerprint(hostKey)
+            : hostKey,
+        );
+        const expectedFingerprint = SSHConnectionManager.normalizeHostFingerprint(
+          config.hostFingerprint,
+        );
+
+        if (actualFingerprint !== expectedFingerprint) {
+          Logger.log(
+            `Host key fingerprint mismatch for [${key}]. Expected ${expectedFingerprint}, got ${actualFingerprint}`,
+            "error",
+          );
+          return false;
+        }
+        return true;
+      };
+
       // Add SOCKS proxy configuration if provided
       if (config.socksProxy) {
         try {
@@ -132,7 +179,7 @@ export class SSHConnectionManager {
           const proxyPort = parseInt(proxyUrl.port, 10);
 
           Logger.log(
-            `Using SOCKS proxy for [${key}]: ${config.socksProxy}`,
+            `Using SOCKS proxy for [${key}]: ${SSHConnectionManager.maskUrlForLogs(config.socksProxy)}`,
             "info",
           );
 
@@ -153,10 +200,7 @@ export class SSHConnectionManager {
           // Set the socket as the sock for SSH connection
           sshConfig.sock = socket;
           Logger.log(
-            `SSH config object with SOCKS proxy: ${JSON.stringify(
-              sshConfig,
-              (k, v) => (k === "sock" ? "[Socket object]" : v),
-            )}`,
+            `SOCKS proxy tunnel established for [${key}] ${proxyHost}:${proxyPort}`,
             "info",
           );
         } catch (err) {
@@ -349,17 +393,87 @@ export class SSHConnectionManager {
   }
 
   /**
-   * Upload file
+   * Return normalized SHA256 fingerprint format: SHA256:<base64>.
    */
-  private validateLocalPath(localPath: string): string {
+  private static normalizeHostFingerprint(fingerprint: string): string {
+    const normalized = fingerprint.trim();
+    const withPrefix = normalized.startsWith("SHA256:")
+      ? normalized
+      : `SHA256:${normalized}`;
+    const [prefix, value = ""] = withPrefix.split(":", 2);
+    // ssh-keygen output may omit trailing base64 padding ("="); normalize both sides.
+    const canonical = value.replace(/=+$/g, "");
+    return `${prefix}:${canonical}`;
+  }
+
+  /**
+   * Build SHA256 fingerprint from raw SSH host key bytes.
+   */
+  private static getHostFingerprint(hostKey: Buffer): string {
+    return `SHA256:${createHash("sha256").update(hostKey).digest("base64")}`;
+  }
+
+  /**
+   * Mask URL credentials for logs.
+   */
+  private static maskUrlForLogs(urlString: string): string {
+    try {
+      const url = new URL(urlString);
+      if (url.username) {
+        url.username = "***";
+      }
+      if (url.password) {
+        url.password = "***";
+      }
+      return url.toString();
+    } catch {
+      return "[invalid-url]";
+    }
+  }
+
+  /**
+   * Check whether target path is within base path.
+   */
+  private static isPathInBase(basePath: string, targetPath: string): boolean {
+    const relative = path.relative(basePath, targetPath);
+    return (
+      relative === "" ||
+      (!relative.startsWith("..") && !path.isAbsolute(relative))
+    );
+  }
+
+  /**
+   * Validate source file path for upload.
+   */
+  private validateUploadLocalPath(localPath: string): string {
+    const workspaceRoot = fs.realpathSync(path.resolve(process.cwd()));
     const resolvedPath = path.resolve(localPath);
-    const workingDir = process.cwd();
-    if (!resolvedPath.startsWith(workingDir)) {
+    const realPath = fs.realpathSync(resolvedPath);
+
+    if (!SSHConnectionManager.isPathInBase(workspaceRoot, realPath)) {
       throw new Error(
-        `Path traversal detected. Local path must be within the working directory.`,
+        "Path traversal detected. Upload source path must be within the working directory.",
       );
     }
-    return resolvedPath;
+    return realPath;
+  }
+
+  /**
+   * Validate destination file path for download.
+   */
+  private validateDownloadLocalPath(localPath: string): string {
+    const workspaceRoot = fs.realpathSync(path.resolve(process.cwd()));
+    const resolvedPath = path.resolve(localPath);
+    const parentDir = path.dirname(resolvedPath);
+    const parentRealPath = fs.realpathSync(parentDir);
+    const validatedPath = path.join(parentRealPath, path.basename(resolvedPath));
+
+    if (!SSHConnectionManager.isPathInBase(workspaceRoot, validatedPath)) {
+      throw new Error(
+        "Path traversal detected. Download destination path must be within the working directory.",
+      );
+    }
+    return validatedPath;
   }
 
   /**
@@ -370,7 +484,7 @@ export class SSHConnectionManager {
     remotePath: string,
     name?: string,
   ): Promise<string> {
-    const validatedLocalPath = this.validateLocalPath(localPath);
+    const validatedLocalPath = this.validateUploadLocalPath(localPath);
     const client = await this.ensureConnected(name);
 
     return new Promise<string>((resolve, reject) => {
@@ -414,7 +528,7 @@ export class SSHConnectionManager {
     localPath: string,
     name?: string,
   ): Promise<string> {
-    const validatedLocalPath = this.validateLocalPath(localPath);
+    const validatedLocalPath = this.validateDownloadLocalPath(localPath);
     const client = await this.ensureConnected(name);
 
     return new Promise<string>((resolve, reject) => {

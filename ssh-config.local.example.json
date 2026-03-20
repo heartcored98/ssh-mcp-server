@@ -1,0 +1,77 @@
+{
+  "server-a": {
+    "host": "server-a.example.com",
+    "port": 22,
+    "username": "alice",
+    "privateKey": "/Users/<your-user>/.ssh/id_rsa",
+    "hostFingerprint": "SHA256:<fingerprint>",
+    "collectSystemStatus": false,
+    "commandBlacklist": [
+      "^\\s*rm\\s+-rf\\s+/(\\s+.*)?$",
+      "^\\s*shutdown\\b.*$",
+      "^\\s*reboot\\b.*$",
+      "^\\s*mkfs\\..*$",
+      "^\\s*dd\\s+if=.*\\s+of=/dev/.*$"
+    ]
+  },
+  "server-b": {
+    "host": "server-b.example.com",
+    "port": 22,
+    "username": "alice",
+    "privateKey": "/Users/<your-user>/.ssh/id_rsa",
+    "hostFingerprint": "SHA256:<fingerprint>",
+    "collectSystemStatus": false,
+    "commandBlacklist": [
+      "^\\s*rm\\s+-rf\\s+/(\\s+.*)?$",
+      "^\\s*shutdown\\b.*$",
+      "^\\s*reboot\\b.*$",
+      "^\\s*mkfs\\..*$",
+      "^\\s*dd\\s+if=.*\\s+of=/dev/.*$"
+    ]
+  },
+  "server-c": {
+    "host": "server-c.example.com",
+    "port": 22,
+    "username": "bob",
+    "privateKey": "/Users/<your-user>/.ssh/id_rsa",
+    "hostFingerprint": "SHA256:<fingerprint>",
+    "collectSystemStatus": false,
+    "commandBlacklist": [
+      "^\\s*rm\\s+-rf\\s+/(\\s+.*)?$",
+      "^\\s*shutdown\\b.*$",
+      "^\\s*reboot\\b.*$",
+      "^\\s*mkfs\\..*$",
+      "^\\s*dd\\s+if=.*\\s+of=/dev/.*$"
+    ]
+  },
+  "server-d": {
+    "host": "server-d.example.com",
+    "port": 22,
+    "username": "bob",
+    "privateKey": "/Users/<your-user>/.ssh/id_rsa",
+    "hostFingerprint": "SHA256:<fingerprint>",
+    "collectSystemStatus": false,
+    "commandBlacklist": [
+      "^\\s*rm\\s+-rf\\s+/(\\s+.*)?$",
+      "^\\s*shutdown\\b.*$",
+      "^\\s*reboot\\b.*$",
+      "^\\s*mkfs\\..*$",
+      "^\\s*dd\\s+if=.*\\s+of=/dev/.*$"
+    ]
+  },
+  "server-e": {
+    "host": "server-e.example.com",
+    "port": 22,
+    "username": "bob",
+    "privateKey": "/Users/<your-user>/.ssh/id_rsa",
+    "hostFingerprint": "SHA256:<fingerprint>",
+    "collectSystemStatus": false,
+    "commandBlacklist": [
+      "^\\s*rm\\s+-rf\\s+/(\\s+.*)?$",
+      "^\\s*shutdown\\b.*$",
+      "^\\s*reboot\\b.*$",
+      "^\\s*mkfs\\..*$",
+      "^\\s*dd\\s+if=.*\\s+of=/dev/.*$"
+    ]
+  }
+}
