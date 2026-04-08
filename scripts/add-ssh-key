@@ -1,0 +1,439 @@
+#!/bin/zsh
+set -euo pipefail
+
+DEFAULT_USER="${ADD_SSH_KEY_DEFAULT_USER:-autopedia}"
+DEFAULT_BATCH_OS="${ADD_SSH_KEY_DEFAULT_OS:-macOS}"
+DEFAULT_DOMAIN="${ADD_SSH_KEY_DEFAULT_DOMAIN:-}"
+PUBKEY_PATH="${ADD_SSH_KEY_PUBKEY_PATH:-${HOME}/.ssh/id_ed25519.pub}"
+PYTHON_BIN="$(command -v python3 || true)"
+EXPECT_BIN="$(command -v expect || true)"
+REMOTE_INSTALL_CMD='umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; key=$(cat); grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\n" "$key" >> ~/.ssh/authorized_keys'
+
+MODE="auto"
+FORCED_USER=""
+FORCED_DOMAIN=""
+BATCH_OS="$DEFAULT_BATCH_OS"
+DRY_RUN=0
+USE_SHARED_PASSWORD=0
+SHARED_PASSWORD=""
+RESOLVED_DOMAIN="$DEFAULT_DOMAIN"
+
+typeset -ga POSITIONAL_ARGS BATCH_PATTERNS MATCHED_LIST SKIPPED_OFFLINE SKIPPED_OS
+typeset -gA MATCHED_TARGETS
+typeset -g NORMALIZED_USER NORMALIZED_HOST
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  add-ssh-key <host>
+  add-ssh-key <user@host>
+  add-ssh-key --batch 'sscl*' 'prnd*'
+  add-ssh-key --prefix sscl --prefix prnd
+
+Options:
+  --batch              Treat remaining arguments as batch match patterns.
+  --prefix PREFIX      Shorthand for the pattern 'PREFIX*'. Repeatable.
+  --user USER          Remote user for targets without user@. Default: autopedia
+  --domain DOMAIN      MagicDNS suffix for short hostnames. Auto-detected when omitted.
+  --os NAME            Batch OS filter. Default: macOS
+  --all-os             Disable the batch OS filter.
+  --shared-password    Prompt once and reuse the same SSH password for all targets.
+  --dry-run, --list    Print matched hosts without connecting.
+  -h, --help           Show this help.
+
+Environment overrides:
+  ADD_SSH_KEY_DEFAULT_USER
+  ADD_SSH_KEY_DEFAULT_DOMAIN
+  ADD_SSH_KEY_DEFAULT_OS
+  ADD_SSH_KEY_PUBKEY_PATH
+
+Notes:
+  - In zsh, wildcard batch patterns must be quoted: 'sscl*'
+  - Batch mode only targets online devices from 'tailscale status --json'.
+  - Batch mode defaults to macOS so NAS/RPi/Linux boxes are skipped unless you change --os or use --all-os.
+  - Shared passwords are kept in memory for the current run only and are not written to disk.
+
+Examples:
+  add-ssh-key sscl-exterior-002-cap1
+  add-ssh-key ehost@a6000a
+  add-ssh-key --prefix sscl --prefix prnd
+  add-ssh-key --batch 'sscl*' 'prnd*'
+  add-ssh-key --shared-password --prefix sscl --prefix prnd
+  add-ssh-key --batch --all-os 'onprem*'
+  add-ssh-key --batch --dry-run 'sscl*' 'prnd*'
+USAGE
+}
+
+ensure_pubkey() {
+  if [[ ! -f "$PUBKEY_PATH" ]]; then
+    echo "Public key not found: $PUBKEY_PATH" >&2
+    echo "Create it first with: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519" >&2
+    exit 1
+  fi
+}
+
+ensure_batch_dependencies() {
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "tailscale CLI not found in PATH" >&2
+    exit 1
+  fi
+
+  if [[ -z "$PYTHON_BIN" ]]; then
+    echo "python3 is required for batch mode" >&2
+    exit 1
+  fi
+}
+
+ensure_password_support() {
+  if (( USE_SHARED_PASSWORD )) && [[ -z "$EXPECT_BIN" ]]; then
+    echo "expect is required for --shared-password" >&2
+    exit 1
+  fi
+}
+
+is_glob_pattern() {
+  case "$1" in
+    *\**|*\?*|*\[* ) return 0 ;;
+    * ) return 1 ;;
+  esac
+}
+
+resolve_default_domain() {
+  if [[ -n "$FORCED_DOMAIN" ]]; then
+    RESOLVED_DOMAIN="$FORCED_DOMAIN"
+    return 0
+  fi
+
+  if [[ -n "$RESOLVED_DOMAIN" ]]; then
+    return 0
+  fi
+
+  if ! command -v tailscale >/dev/null 2>&1 || [[ -z "$PYTHON_BIN" ]]; then
+    return 1
+  fi
+
+  RESOLVED_DOMAIN="$(
+    tailscale status --json | "$PYTHON_BIN" -c '
+import json, sys
+data = json.load(sys.stdin)
+print((data.get("MagicDNSSuffix") or "").rstrip("."))
+'
+  )"
+
+  [[ -n "$RESOLVED_DOMAIN" ]]
+}
+
+normalize_target() {
+  local target="$1"
+
+  if [[ "$target" == *"@"* ]]; then
+    NORMALIZED_USER="${target%@*}"
+    NORMALIZED_HOST="${target#*@}"
+  else
+    NORMALIZED_USER="${FORCED_USER:-$DEFAULT_USER}"
+    NORMALIZED_HOST="$target"
+  fi
+
+  if [[ "$NORMALIZED_HOST" != *.* ]]; then
+    if ! resolve_default_domain; then
+      echo "Cannot resolve tailnet suffix for short hostname: $NORMALIZED_HOST" >&2
+      echo "Install/login tailscale CLI or pass --domain <tailnet.ts.net>" >&2
+      exit 1
+    fi
+    NORMALIZED_HOST="${NORMALIZED_HOST}.${RESOLVED_DOMAIN}"
+  fi
+}
+
+prompt_for_shared_password() {
+  local confirmation=""
+
+  if [[ -n "$SHARED_PASSWORD" ]]; then
+    return
+  fi
+
+  read -rs "SHARED_PASSWORD?Shared SSH password: "
+  echo
+  read -rs "confirmation?Confirm password: "
+  echo
+
+  if [[ "$SHARED_PASSWORD" != "$confirmation" ]]; then
+    echo "Password confirmation mismatch" >&2
+    exit 1
+  fi
+}
+
+run_expect_ssh() {
+  local ssh_target="$1"
+
+  PUBKEY_PATH="$PUBKEY_PATH" \
+  SSH_TARGET="$ssh_target" \
+  REMOTE_CMD="$REMOTE_INSTALL_CMD" \
+  SSH_PASSWORD="$SHARED_PASSWORD" \
+  "$EXPECT_BIN" <<'EOF_EXPECT'
+set timeout -1
+log_user 1
+spawn -noecho env \
+  PUBKEY_PATH=$env(PUBKEY_PATH) \
+  SSH_TARGET=$env(SSH_TARGET) \
+  REMOTE_CMD=$env(REMOTE_CMD) \
+  /bin/sh -c {cat "$PUBKEY_PATH" | ssh -o PreferredAuthentications=publickey,password,keyboard-interactive "$SSH_TARGET" "$REMOTE_CMD"}
+expect {
+  -re {(?i)are you sure you want to continue connecting.*} {
+    send -- "yes\r"
+    exp_continue
+  }
+  -re {(?i)(password|passphrase).*: *$} {
+    send -- "$env(SSH_PASSWORD)\r"
+    exp_continue
+  }
+  eof {
+    catch wait result
+    set exit_status [lindex $result 3]
+    exit $exit_status
+  }
+}
+EOF_EXPECT
+}
+
+register_target() {
+  local target="$1"
+  local ssh_target=""
+
+  normalize_target "$target"
+  ssh_target="${NORMALIZED_USER}@${NORMALIZED_HOST}"
+
+  echo "Registering $PUBKEY_PATH on ${ssh_target}"
+
+  if (( USE_SHARED_PASSWORD )); then
+    prompt_for_shared_password
+    if run_expect_ssh "$ssh_target"; then
+      echo "Done: ${ssh_target}"
+      return 0
+    fi
+  else
+    if cat "$PUBKEY_PATH" | ssh "$ssh_target" "$REMOTE_INSTALL_CMD"; then
+      echo "Done: ${ssh_target}"
+      return 0
+    fi
+  fi
+
+  echo "Failed: ${ssh_target}" >&2
+  return 1
+}
+
+collect_batch_targets() {
+  local -a patterns=("$@")
+  local short fqdn host_os online pattern lower_short lower_fqdn lower_pattern matched
+
+  MATCHED_LIST=()
+  SKIPPED_OFFLINE=()
+  SKIPPED_OS=()
+  MATCHED_TARGETS=()
+
+  if [[ -n "$FORCED_DOMAIN" ]]; then
+    RESOLVED_DOMAIN="$FORCED_DOMAIN"
+  fi
+
+  while IFS=$'\t' read -r short fqdn host_os online; do
+    [[ -z "$short" || -z "$fqdn" ]] && continue
+
+    lower_short="${short:l}"
+    lower_fqdn="${fqdn:l}"
+    matched=0
+
+    for pattern in "${patterns[@]}"; do
+      lower_pattern="${pattern:l}"
+      if [[ "$lower_short" == ${~lower_pattern} || "$lower_fqdn" == ${~lower_pattern} ]]; then
+        matched=1
+        break
+      fi
+    done
+
+    (( matched )) || continue
+
+    if [[ "$online" != "1" ]]; then
+      SKIPPED_OFFLINE+=("$short")
+      continue
+    fi
+
+    if [[ -n "$BATCH_OS" && "${host_os:l}" != "${BATCH_OS:l}" ]]; then
+      SKIPPED_OS+=("$short ($host_os)")
+      continue
+    fi
+
+    if [[ -z "${MATCHED_TARGETS[$fqdn]-}" ]]; then
+      MATCHED_TARGETS[$fqdn]=1
+      MATCHED_LIST+=("$fqdn")
+    fi
+  done < <(
+    tailscale status --json | "$PYTHON_BIN" -c '
+import json, sys
+
+data = json.load(sys.stdin)
+suffix = (data.get("MagicDNSSuffix") or "").rstrip(".")
+for peer in data.get("Peer", {}).values():
+    dns = (peer.get("DNSName") or "").rstrip(".")
+    if not dns:
+        continue
+    short = dns
+    if suffix and dns.endswith("." + suffix):
+        short = dns[:-(len(suffix) + 1)]
+    os_name = peer.get("OS") or ""
+    online = "1" if peer.get("Online") else "0"
+    print(f"{short}\t{dns}\t{os_name}\t{online}")
+'
+  )
+}
+
+print_batch_summary() {
+  if (( ${#MATCHED_LIST[@]} > 0 )); then
+    echo "Matched ${#MATCHED_LIST[@]} host(s):"
+    printf '  - %s\n' "${MATCHED_LIST[@]}"
+  else
+    echo "Matched 0 online host(s)."
+  fi
+
+  if (( ${#SKIPPED_OFFLINE[@]} > 0 )); then
+    echo "Skipped offline: ${(j:, :)SKIPPED_OFFLINE}"
+  fi
+
+  if (( ${#SKIPPED_OS[@]} > 0 )); then
+    echo "Skipped by OS filter (${BATCH_OS}): ${(j:, :)SKIPPED_OS}"
+  fi
+}
+
+run_batch() {
+  local -a patterns=("$@")
+  local target batch_target
+  local success_count=0
+  local failure_count=0
+
+  ensure_batch_dependencies
+  collect_batch_targets "${patterns[@]}"
+  print_batch_summary
+
+  if (( ${#MATCHED_LIST[@]} == 0 )); then
+    return 1
+  fi
+
+  if (( DRY_RUN )); then
+    return 0
+  fi
+
+  if (( USE_SHARED_PASSWORD )); then
+    prompt_for_shared_password
+  fi
+
+  for target in "${MATCHED_LIST[@]}"; do
+    if [[ -n "$FORCED_USER" ]]; then
+      batch_target="${FORCED_USER}@${target}"
+    else
+      batch_target="$target"
+    fi
+
+    if register_target "$batch_target"; then
+      (( success_count += 1 ))
+    else
+      (( failure_count += 1 ))
+    fi
+  done
+
+  echo "Summary: ${success_count} succeeded, ${failure_count} failed."
+  (( failure_count == 0 ))
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --batch)
+      MODE="batch"
+      ;;
+    --prefix)
+      shift
+      if (( $# == 0 )); then
+        echo "Missing value for --prefix" >&2
+        exit 1
+      fi
+      BATCH_PATTERNS+=("${1}*")
+      MODE="batch"
+      ;;
+    --user)
+      shift
+      if (( $# == 0 )); then
+        echo "Missing value for --user" >&2
+        exit 1
+      fi
+      FORCED_USER="$1"
+      ;;
+    --domain)
+      shift
+      if (( $# == 0 )); then
+        echo "Missing value for --domain" >&2
+        exit 1
+      fi
+      FORCED_DOMAIN="${1#.}"
+      ;;
+    --os)
+      shift
+      if (( $# == 0 )); then
+        echo "Missing value for --os" >&2
+        exit 1
+      fi
+      BATCH_OS="$1"
+      MODE="batch"
+      ;;
+    --all-os)
+      BATCH_OS=""
+      MODE="batch"
+      ;;
+    --shared-password)
+      USE_SHARED_PASSWORD=1
+      ;;
+    --dry-run|--list)
+      DRY_RUN=1
+      MODE="batch"
+      ;;
+    --)
+      shift
+      POSITIONAL_ARGS+=("$@")
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      ;;
+  esac
+  shift
+done
+
+ensure_pubkey
+ensure_password_support
+
+if (( ${#POSITIONAL_ARGS[@]} == 0 && ${#BATCH_PATTERNS[@]} == 0 )); then
+  usage >&2
+  exit 1
+fi
+
+if (( ${#POSITIONAL_ARGS[@]} > 1 )); then
+  MODE="batch"
+fi
+
+for arg in "${POSITIONAL_ARGS[@]}"; do
+  if is_glob_pattern "$arg"; then
+    MODE="batch"
+  fi
+done
+
+if [[ "$MODE" == "batch" ]]; then
+  BATCH_PATTERNS+=("${POSITIONAL_ARGS[@]}")
+  run_batch "${BATCH_PATTERNS[@]}"
+else
+  register_target "${POSITIONAL_ARGS[1]}"
+fi

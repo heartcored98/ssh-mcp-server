@@ -101,6 +101,73 @@ args = [
 
 Local config files such as `ssh-config.local.json` are intended to stay uncommitted. This repository already ignores common local config filenames.
 
+### Optional Utility: `add-ssh-key` for Tailscale Hosts
+
+This repository also includes a shell utility for rolling out your local SSH public key to Tailscale-managed hosts so you can switch them to passwordless SSH.
+
+What it does:
+
+- Reads your local public key from `~/.ssh/id_ed25519.pub` by default.
+- Appends that key to the remote user's `~/.ssh/authorized_keys`.
+- Supports one host at a time or batch matching from `tailscale status --json`.
+- Can prompt once for a shared password and reuse it across a matched host set.
+
+Setup on a new machine:
+
+```bash
+git clone <your-fork-or-repo-url>
+cd ssh-mcp-server
+./scripts/install-user-tools.sh
+```
+
+This installs a symlink at `~/.local/bin/add-ssh-key` pointing back to the repository copy, so pulling the repo updates the utility without another reinstall.
+
+If you want a different install location:
+
+```bash
+./scripts/install-user-tools.sh --bin-dir "$HOME/bin"
+```
+
+Prerequisites:
+
+- `~/.ssh/id_ed25519.pub` exists locally, or set `ADD_SSH_KEY_PUBKEY_PATH` to a different public key path.
+- `tailscale` CLI is installed and logged in if you want batch mode or automatic MagicDNS suffix detection.
+- `python3` is available for batch mode.
+- `expect` is available if you want `--shared-password`.
+
+Useful environment overrides:
+
+```bash
+export ADD_SSH_KEY_DEFAULT_USER=autopedia
+export ADD_SSH_KEY_DEFAULT_DOMAIN=tail3db8fc.ts.net
+export ADD_SSH_KEY_DEFAULT_OS=macOS
+export ADD_SSH_KEY_PUBKEY_PATH="$HOME/.ssh/id_ed25519.pub"
+```
+
+Single-host examples:
+
+```bash
+add-ssh-key sscl-exterior-002-cap1
+add-ssh-key autopedia@sscl-exterior-002-cap1
+add-ssh-key --domain tail3db8fc.ts.net prnd-exterior-001-cap1
+```
+
+Batch examples:
+
+```bash
+add-ssh-key --dry-run --prefix sscl --prefix prnd
+add-ssh-key --shared-password --prefix sscl --prefix prnd
+add-ssh-key --batch 'sscl*' 'prnd*'
+add-ssh-key --batch --all-os 'onprem*'
+```
+
+Batch behavior:
+
+- Only online hosts are targeted.
+- The default OS filter is `macOS`.
+- In zsh, wildcard patterns must be quoted, for example `'sscl*'`.
+- Shared passwords are kept only in memory for the current run and are not written to disk.
+
 ### 🔧 MCP Configuration Examples
 
 > **⚠️ Important**: In MCP configuration files, each command line argument and its value must be separate elements in the `args` array. Do NOT combine them with spaces. For example, use `"--host", "192.168.1.1"` instead of `"--host 192.168.1.1"`.
