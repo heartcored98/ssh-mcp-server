@@ -46,6 +46,54 @@ NPM: [https://www.npmjs.com/package/@fangjunjie/ssh-mcp-server](https://www.npmj
 
 ## 📚 Usage
 
+### 🚀 Recommended Setup For Forks And Other Machines
+
+If you are using this repository directly, a fork of it, or local unpublished changes, prefer running the built local entrypoint instead of `npx @fangjunjie/ssh-mcp-server`. The npm package only contains the code that has been published to npm.
+
+Recommended bootstrap flow:
+
+```bash
+git clone <your-fork-or-repo-url>
+cd ssh-mcp-server
+npm install
+npm run build
+cp ssh-config.local.example.json ssh-config.local.json
+```
+
+Then update `ssh-config.local.json`:
+
+- Use an absolute path for `privateKey` such as `/Users/alice/.ssh/id_rsa` or `/home/alice/.ssh/id_ed25519`.
+- Do not use `~/.ssh/...` in config values. This server does not expand `~`.
+- Prefer the object JSON format so the top-level key becomes a stable `connectionName`.
+- Keep `collectSystemStatus` disabled unless you explicitly want system metadata returned by `list-servers`.
+
+Collect the host fingerprint before connecting:
+
+```bash
+ssh-keyscan -p 22 server.example.com 2>/dev/null | ssh-keygen -lf - -E sha256
+```
+
+Run the server locally with your config:
+
+```bash
+node build/index.js --config-file /absolute/path/to/ssh-config.local.json --pre-connect
+```
+
+For Codex desktop / CLI style MCP registration, use the local build path:
+
+```toml
+[mcp_servers.ssh_multi]
+command = "node"
+args = [
+  "/absolute/path/to/ssh-mcp-server/build/index.js",
+  "--config-file",
+  "/absolute/path/to/ssh-mcp-server/ssh-config.local.json",
+  "--pre-connect",
+]
+```
+
+Local config files such as `ssh-config.local.json` are intended to stay uncommitted. This repository already ignores common local config filenames.
+
 ### 🔧 MCP Configuration Examples
 
 > **⚠️ Important**: In MCP configuration files, each command line argument and its value must be separate elements in the `args` array. Do NOT combine them with spaces. For example, use `"--host", "192.168.1.1"` instead of `"--host 192.168.1.1"`.
@@ -106,7 +154,7 @@ Options:
         "--host", "192.168.1.1",
         "--port", "22",
         "--username", "root",
-        "--privateKey", "~/.ssh/id_rsa",
+        "--privateKey", "/absolute/path/to/id_rsa",
         "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT"
       ]
     }
@@ -127,7 +175,7 @@ Options:
         "--host", "192.168.1.1",
         "--port", "22",
         "--username", "root",
-        "--privateKey", "~/.ssh/id_rsa",
+        "--privateKey", "/absolute/path/to/id_rsa",
         "--passphrase", "pwd123456",
         "--host-fingerprint", "SHA256:REPLACE_WITH_SERVER_FINGERPRINT"
       ]
@@ -217,6 +265,8 @@ There are three ways to configure multiple SSH connections:
 
 Create a JSON configuration file (e.g., `ssh-config.json`):
 
+> Tip: start from `ssh-config.local.example.json` and copy it to `ssh-config.local.json`. The object format below is the best fit for long-lived multi-host setups because each top-level key becomes the MCP `connectionName`.
+
 **Array Format:**
 ```json
 [
@@ -225,18 +275,20 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "host": "1.2.3.4",
     "port": 22,
     "username": "alice",
-    "password": "{abc=P100s0}",
+    "privateKey": "/absolute/path/to/id_rsa",
     "hostFingerprint": "SHA256:REPLACE_WITH_DEV_FINGERPRINT",
-    "socksProxy": "socks://127.0.0.1:10808"
+    "collectSystemStatus": false,
+    "commandBlacklist": ["^\\s*rm\\s+-rf\\s+/.*$"]
   },
   {
     "name": "prod",
     "host": "5.6.7.8",
     "port": 22,
     "username": "bob",
-    "password": "yyy",
+    "privateKey": "/absolute/path/to/id_ed25519",
     "hostFingerprint": "SHA256:REPLACE_WITH_PROD_FINGERPRINT",
-    "socksProxy": "socks://127.0.0.1:10808"
+    "collectSystemStatus": false,
+    "commandBlacklist": ["^\\s*rm\\s+-rf\\s+/.*$"]
   }
 ]
 ```
@@ -248,17 +300,19 @@ Create a JSON configuration file (e.g., `ssh-config.json`):
     "host": "1.2.3.4",
     "port": 22,
     "username": "alice",
-    "password": "{abc=P100s0}",
+    "privateKey": "/absolute/path/to/id_rsa",
     "hostFingerprint": "SHA256:REPLACE_WITH_DEV_FINGERPRINT",
-    "socksProxy": "socks://127.0.0.1:10808"
+    "collectSystemStatus": false,
+    "commandBlacklist": ["^\\s*rm\\s+-rf\\s+/.*$"]
   },
   "prod": {
     "host": "5.6.7.8",
     "port": 22,
     "username": "bob",
-    "password": "yyy",
+    "privateKey": "/absolute/path/to/id_ed25519",
     "hostFingerprint": "SHA256:REPLACE_WITH_PROD_FINGERPRINT",
-    "socksProxy": "socks://127.0.0.1:10808"
+    "collectSystemStatus": false,
+    "commandBlacklist": ["^\\s*rm\\s+-rf\\s+/.*$"]
   }
 }
 ```
@@ -312,6 +366,8 @@ npx @fangjunjie/ssh-mcp-server \
 
 > **⚠️ Note**: The legacy format may have issues with passwords containing special characters like `=`, `,`, `{`, `}`. Use Method 1 or Method 2 for passwords with special characters.
 
+> **⚠️ Note**: `privateKey` values should be absolute filesystem paths. `~` is not expanded.
+
 In MCP tool calls, specify the connection name via the `connectionName` parameter. If omitted, the default connection is used.
 
 Example (execute command on 'prod' connection):
@@ -364,10 +420,12 @@ Example response:
 
 ```json
 [
-  { "name": "dev", "host": "1.2.3.4", "port": 22, "username": "alice" },
-  { "name": "prod", "host": "5.6.7.8", "port": 22, "username": "bob" }
+  { "name": "dev", "host": "1.2.3.4", "port": 22, "username": "alice", "connected": true },
+  { "name": "prod", "host": "5.6.7.8", "port": 22, "username": "bob", "connected": false }
 ]
 ```
+
+If `collectSystemStatus` is enabled for a connection, the response can also include a `status` object with remote system metadata.
 
 ## 🛡️ Security Considerations
 
@@ -375,6 +433,7 @@ This server provides powerful capabilities to execute commands and transfer file
 
 - **Command Whitelisting**: It is *strongly recommended* to use the `--whitelist` option to restrict the set of commands that can be executed. Without a whitelist, any command can be executed on the remote server, which can be a significant security risk.
 - **Host Key Verification**: Set `--host-fingerprint SHA256:...` (or `hostFingerprint` in config) to pin the SSH server host key and prevent MITM attacks. Avoid `--insecure-skip-host-key-checking` unless you fully trust the network.
+- **Private Key Paths**: Use absolute paths for `privateKey`. Shell shortcuts like `~` are not expanded by this server.
 - **Private Key Security**: The server reads the SSH private key into memory. Ensure that the machine running the `ssh-mcp-server` is secure. Do not expose the server to untrusted networks.
 - **Denial of Service (DoS)**: The server does not have built-in rate limiting. An attacker could potentially launch a DoS attack by flooding the server with connection requests or large file transfers. It is recommended to run the server behind a firewall or reverse proxy with rate-limiting capabilities.
 - **Path Traversal**: Upload/download local paths are restricted to the current working directory. Use a dedicated workspace and least-privilege filesystem permissions.
