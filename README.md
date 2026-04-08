@@ -73,6 +73,13 @@ Collect the host fingerprint before connecting:
 ssh-keyscan -p 22 server.example.com 2>/dev/null | ssh-keygen -lf - -E sha256
 ```
 
+When using Tailscale hostnames such as `node-name.your-tailnet.ts.net`:
+
+- Collect the fingerprint with the same hostname you plan to configure in `host` whenever possible.
+- `ssh-keyscan` may print multiple fingerprints (for example RSA, ECDSA, ED25519). This server validates the host key type that `ssh2` actually negotiates, so the correct `hostFingerprint` must match the negotiated key, not just any advertised key.
+- If a trusted Tailscale host still fails with `Host key fingerprint mismatch`, try the ED25519 fingerprint first or test the other advertised fingerprints until one matches.
+- Tailscale hostnames often resolve to `100.x.y.z` addresses. The hostname and the IP should usually expose the same host keys, but the configured `host` value should still match the address style you actually use in your SSH workflow.
+
 Run the server locally with your config:
 
 ```bash
